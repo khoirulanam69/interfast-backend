@@ -57,7 +57,7 @@ router.get('/monitor/traffic/:interface', mikrotikController.monitorInterfaceTra
 router.get('/monitor/resource', mikrotikController.monitorSystemResource);
 router.get('/log', mikrotikController.getSystemLog);
 
-app.get('/show-origins', (req, res) => {
+router.get('/show-origins', (req, res) => {
   res.json({ allowedOrigins: process.env.ALLOWED_ORIGINS });
 });
 
