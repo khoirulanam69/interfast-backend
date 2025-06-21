@@ -1,4 +1,3 @@
-
 const mikrotikService = require('../services/mikrotikService');
 const logger = require('../utils/logger');
 
@@ -75,6 +74,26 @@ class MikrotikController {
     try {
       const { username } = req.params;
       const result = await mikrotikService.removeUser(username);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async deletePPPSecret(req, res, next) {
+    try {
+      const { username } = req.params;
+      const result = await mikrotikService.deletePPPSecret(username);
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async disconnectPPPUser(req, res, next) {
+    try {
+      const { username } = req.params;
+      const result = await mikrotikService.disconnectPPPUser(username);
       res.json(result);
     } catch (error) {
       next(error);

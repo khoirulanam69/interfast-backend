@@ -1,4 +1,3 @@
-
 const { RouterOSAPI } = require('node-routeros');
 const logger = require('../utils/logger');
 
@@ -243,7 +242,7 @@ class MikrotikService {
 
   async createPPPSecret(usernameDialer, password, profile = 'default') {
     try {
-      logger.info(`Creating PPP secret for ${usernameDialer}`);
+      logger.info(`Creating PPP secret for ${usernameDialer} with profile ${profile}`);
       
       const conn = await this.connect();
 
@@ -262,7 +261,7 @@ class MikrotikService {
           `=profile=${profile}`,
           '=service=pppoe'
         ]);
-        logger.info(`Created PPP secret: ${usernameDialer}`);
+        logger.info(`Created PPP secret: ${usernameDialer} with profile: ${profile}`);
       } else {
         logger.info(`PPP secret already exists: ${usernameDialer}`);
       }
@@ -311,6 +310,62 @@ class MikrotikService {
     } catch (error) {
       logger.error('Error removing user:', error);
       throw new Error(`Failed to remove user: ${error.message}`);
+    }
+  }
+
+  async deletePPPSecret(username) {
+    try {
+      logger.info(`Deleting PPP secret for ${username}`);
+      const conn = await this.connect();
+
+      // Find and remove PPP secret by username
+      const secrets = await conn.write([
+        '/ppp/secret/print',
+        `?name=${username}`
+      ]);
+      
+      if (secrets.length > 0) {
+        await conn.write([
+          '/ppp/secret/remove',
+          `=numbers=${secrets[0]['.id']}`
+        ]);
+        logger.info(`PPP secret deleted for ${username}`);
+      } else {
+        logger.info(`PPP secret not found for ${username}`);
+      }
+
+      conn.close();
+      return { success: true, message: `PPP secret deleted for ${username}` };
+    } catch (error) {
+      logger.error('Error deleting PPP secret:', error);
+      throw new Error(`Failed to delete PPP secret: ${error.message}`);
+    }
+  }
+
+  async disconnectPPPUser(username) {
+    try {
+      logger.info(`Disconnecting PPP user ${username}`);
+      const conn = await this.connect();
+
+      // Find and remove active connections by username
+      const activeUsers = await conn.write([
+        '/ppp/active/print',
+        `?name=${username}`
+      ]);
+      
+      for (const activeUser of activeUsers) {
+        await conn.write([
+          '/ppp/active/remove',
+          `=numbers=${activeUser['.id']}`
+        ]);
+        logger.info(`Disconnected active connection for ${username}`);
+      }
+
+      conn.close();
+      return { success: true, message: `PPP user ${username} disconnected` };
+    } catch (error) {
+      logger.error('Error disconnecting PPP user:', error);
+      throw new Error(`Failed to disconnect PPP user: ${error.message}`);
     }
   }
 
