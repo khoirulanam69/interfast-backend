@@ -1,4 +1,3 @@
-
 const express = require('express');
 const router = express.Router();
 const mikrotikController = require('../controllers/mikrotikController');
@@ -30,7 +29,7 @@ router.get('/ppp/profiles', mikrotikController.getPPPProfiles);
 router.post('/ppp/secret', validateRequest(secretSchema), mikrotikController.createPPPSecret);
 router.put('/ppp/secret/:name', mikrotikController.updatePPPSecret);
 router.delete('/ppp/secret/:name', mikrotikController.deletePPPSecret);
-router.post('/ppp/active/:id/remove', mikrotikController.removeActiveConnection);
+router.delete('/ppp/active/:username', mikrotikController.disconnectPPPUser);
 
 // Wireless management routes
 router.get('/wireless/interfaces', mikrotikController.getWirelessInterfaces);

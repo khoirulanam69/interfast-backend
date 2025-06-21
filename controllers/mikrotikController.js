@@ -93,8 +93,8 @@ class MikrotikController {
 
   async deletePPPSecret(req, res, next) {
     try {
-      const { username } = req.params;
-      const result = await mikrotikService.deletePPPSecret(username);
+      const { name } = req.params;
+      const result = await mikrotikService.deletePPPSecret(name);
       res.json(result);
     } catch (error) {
       next(error);
@@ -104,9 +104,11 @@ class MikrotikController {
   async disconnectPPPUser(req, res, next) {
     try {
       const { username } = req.params;
+      logger.info(`Disconnecting PPP user: ${username}`);
       const result = await mikrotikService.disconnectPPPUser(username);
       res.json(result);
     } catch (error) {
+      logger.error('Error in disconnectPPPUser controller:', error);
       next(error);
     }
   }
