@@ -53,9 +53,20 @@ class MikrotikController {
   async regenerateUserCredentials(req, res, next) {
     try {
       const { oldUsername, newUsername, newPassword, profile } = req.body;
+      
+      console.log('Regenerating credentials request:', { oldUsername, newUsername, profile });
+      
+      if (!oldUsername || !newUsername || !newPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Missing required parameters: oldUsername, newUsername, newPassword'
+        });
+      }
+      
       const result = await mikrotikService.regenerateUserCredentials(oldUsername, newUsername, newPassword, profile);
       res.json(result);
     } catch (error) {
+      console.error('Error in regenerateUserCredentials controller:', error);
       next(error);
     }
   }
