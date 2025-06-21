@@ -157,11 +157,18 @@ class MikrotikService {
     }
   }
 
-  async regenerateUserCredentials(oldUsername, newUsername, newPassword, profile = 'default') {
+  async regenerateUserCredentials(oldUsername, newUsername, newPassword, profile = 'Interfast Bronze') {
     try {
-      logger.info(`Regenerating credentials from ${oldUsername} to ${newUsername}`);
+      logger.info(`Regenerating credentials from ${oldUsername} to ${newUsername} with profile ${profile}`);
       
       const conn = await this.connect();
+
+      // Validate profile exists
+      const validProfiles = ['Interfast Bronze', 'Interfast Silver', 'Interfast Gold', 'Interfast Platinum'];
+      if (!validProfiles.includes(profile)) {
+        logger.warn(`Invalid profile ${profile}, using default Interfast Bronze`);
+        profile = 'Interfast Bronze';
+      }
 
       // Remove active connections for old username
       try {
@@ -198,7 +205,7 @@ class MikrotikService {
             `=profile=${profile}`,
             '=disabled=no'
           ]);
-          logger.info(`Updated PPP secret from ${oldUsername} to ${newUsername}`);
+          logger.info(`Updated PPP secret from ${oldUsername} to ${newUsername} with profile ${profile}`);
         } else {
           // Create new secret if old one doesn't exist
           await conn.write([
@@ -209,7 +216,7 @@ class MikrotikService {
             '=service=pppoe',
             '=disabled=no'
           ]);
-          logger.info(`Created new PPP secret: ${newUsername}`);
+          logger.info(`Created new PPP secret: ${newUsername} with profile ${profile}`);
         }
 
         // Remove any active connections for the new username as well
@@ -232,7 +239,7 @@ class MikrotikService {
       }
 
       conn.close();
-      return { success: true, message: `Credentials regenerated successfully for ${newUsername}` };
+      return { success: true, message: `Credentials regenerated successfully for ${newUsername} with profile ${profile}` };
       
     } catch (error) {
       logger.error('Error regenerating credentials:', error);
@@ -240,11 +247,18 @@ class MikrotikService {
     }
   }
 
-  async createPPPSecret(usernameDialer, password, profile = 'default') {
+  async createPPPSecret(usernameDialer, password, profile = 'Interfast Bronze') {
     try {
       logger.info(`Creating PPP secret for ${usernameDialer} with profile ${profile}`);
       
       const conn = await this.connect();
+
+      // Validate profile exists
+      const validProfiles = ['Interfast Bronze', 'Interfast Silver', 'Interfast Gold', 'Interfast Platinum'];
+      if (!validProfiles.includes(profile)) {
+        logger.warn(`Invalid profile ${profile}, using default Interfast Bronze`);
+        profile = 'Interfast Bronze';
+      }
 
       // Check if secret already exists
       const existingSecrets = await conn.write([
@@ -267,7 +281,7 @@ class MikrotikService {
       }
 
       conn.close();
-      return { success: true, message: `PPP secret ready for ${usernameDialer}` };
+      return { success: true, message: `PPP secret ready for ${usernameDialer} with profile ${profile}` };
       
     } catch (error) {
       logger.error('Error creating PPP secret:', error);
