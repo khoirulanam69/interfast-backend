@@ -21,7 +21,7 @@
     "winston": "^3.11.0",
     "express-rate-limit": "^7.1.5",
     "joi": "^17.11.0",
-    "compression": "^1.7.4"
+    "compression": "^1.8.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
