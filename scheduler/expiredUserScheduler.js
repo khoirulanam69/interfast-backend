@@ -1,14 +1,12 @@
 const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
-const MikrotikService = require('../services/mikrotikService');
+const mikrotikService = require('../services/mikrotikService');
 
 // Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-const mikrotikService = new MikrotikService();
 
 /**
  * Check and deactivate expired users
