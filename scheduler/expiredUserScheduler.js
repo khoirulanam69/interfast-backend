@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
-const mikrotikService = require('../services/mikrotikService');
+const MikrotikService = require('../services/mikrotikService');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -8,10 +8,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const mikrotikService = new MikrotikService();
+
+/**
+ * Update user status in MikroTik (async, non-blocking)
+ * This runs in background and won't block the main process
+ */
+async function updateMikroTikStatus(username, status) {
+  try {
+    await mikrotikService.updateUserStatus(username, status);
+    console.log(`✓ MikroTik updated for user: ${username}`);
+  } catch (error) {
+    console.error(`✗ MikroTik update failed for ${username}:`, error.message);
+    // Log but don't throw - this shouldn't stop the process
+  }
+}
+
 /**
  * Check and deactivate expired users
- * - Updates user_status to 'Inactive' in database
- * - Disables user in MikroTik
+ * - Updates user_status to 'Inactive' in database (priority)
+ * - Queues MikroTik updates to run asynchronously (non-blocking)
  */
 async function deactivateExpiredUsers() {
   try {
@@ -36,10 +52,15 @@ async function deactivateExpiredUsers() {
 
     console.log(`Found ${expiredUsers.length} expired users to deactivate.`);
 
-    // Process each expired user
+    // Track results
+    let dbSuccessCount = 0;
+    let dbFailCount = 0;
+    const mikrotikPromises = [];
+
+    // Process all database updates first (fast and reliable)
     for (const user of expiredUsers) {
       try {
-        console.log(`Deactivating user: ${user.name} (${user.username_dial})`);
+        console.log(`Deactivating user in DB: ${user.name} (${user.username_dial})`);
 
         // Update status in database to Inactive
         const { error: updateError } = await supabase
@@ -49,24 +70,42 @@ async function deactivateExpiredUsers() {
 
         if (updateError) {
           console.error(`Failed to update database for user ${user.username_dial}:`, updateError);
+          dbFailCount++;
           continue;
         }
 
-        // Update status in MikroTik to Inactive
-        try {
-          await mikrotikService.updateUserStatus(user.username_dial, 'Inactive');
-          console.log(`Successfully deactivated user in MikroTik: ${user.username_dial}`);
-        } catch (mikrotikError) {
-          console.error(`Failed to deactivate user in MikroTik ${user.username_dial}:`, mikrotikError.message);
-          // Continue with next user even if MikroTik update fails
-        }
+        dbSuccessCount++;
+
+        // Queue MikroTik update to run in background (non-blocking)
+        // This won't stop the process if MikroTik is slow or fails
+        mikrotikPromises.push(
+          updateMikroTikStatus(user.username_dial, 'Inactive')
+        );
 
       } catch (userError) {
         console.error(`Error processing user ${user.username_dial}:`, userError);
+        dbFailCount++;
       }
     }
 
-    console.log('Expired users deactivation completed.', new Date().toISOString());
+    console.log(`Database updates completed: ${dbSuccessCount} success, ${dbFailCount} failed`);
+    console.log(`Queued ${mikrotikPromises.length} MikroTik updates to run in background...`);
+
+    // Run all MikroTik updates in parallel (non-blocking)
+    // Using Promise.allSettled to ensure all attempts complete regardless of failures
+    if (mikrotikPromises.length > 0) {
+      Promise.allSettled(mikrotikPromises)
+        .then(results => {
+          const successful = results.filter(r => r.status === 'fulfilled').length;
+          const failed = results.filter(r => r.status === 'rejected').length;
+          console.log(`MikroTik updates completed: ${successful} success, ${failed} failed`);
+        })
+        .catch(error => {
+          console.error('Error in MikroTik batch update:', error);
+        });
+    }
+
+    console.log('Expired users deactivation process completed.', new Date().toISOString());
 
   } catch (error) {
     console.error('Error in deactivateExpiredUsers:', error);
