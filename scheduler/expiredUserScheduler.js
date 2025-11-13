@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
-const mikrotikService = require('../services/mikrotikService');
+const MikrotikService = require('../services/mikrotikService');
+const logger = require('../utils/logger');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -8,16 +9,24 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const mikrotikService = new MikrotikService();
+
 /**
  * Update user status in MikroTik (async, non-blocking)
  * This runs in background and won't block the main process
  */
 async function updateMikroTikStatus(username, status) {
   try {
+    logger.info(`Starting MikroTik update for user: ${username}`);
     await mikrotikService.updateUserStatus(username, status);
-    console.log(`✓ MikroTik updated for user: ${username}`);
+    logger.info(`✓ MikroTik updated successfully for user: ${username}`);
   } catch (error) {
-    console.error(`✗ MikroTik update failed for ${username}:`, error.message);
+    logger.error(`✗ MikroTik update failed for ${username}`, {
+      error: error.message,
+      stack: error.stack,
+      username: username,
+      status: status
+    });
     // Log but don't throw - this shouldn't stop the process
   }
 }
@@ -29,7 +38,7 @@ async function updateMikroTikStatus(username, status) {
  */
 async function deactivateExpiredUsers() {
   try {
-    console.log('Starting expired users check...', new Date().toISOString());
+    logger.info('=== Starting expired users check ===', { timestamp: new Date().toISOString() });
 
     // Get all active users whose expired_date has passed
     const { data: expiredUsers, error: fetchError } = await supabase
@@ -39,16 +48,22 @@ async function deactivateExpiredUsers() {
       .lt('expired_date', new Date().toISOString().split('T')[0]);
 
     if (fetchError) {
-      console.error('Error fetching expired users:', fetchError);
+      logger.error('Error fetching expired users from database', {
+        error: fetchError.message,
+        details: fetchError
+      });
       return;
     }
 
     if (!expiredUsers || expiredUsers.length === 0) {
-      console.log('No expired users found.');
+      logger.info('No expired users found.');
       return;
     }
 
-    console.log(`Found ${expiredUsers.length} expired users to deactivate.`);
+    logger.info(`Found ${expiredUsers.length} expired users to deactivate`, {
+      userCount: expiredUsers.length,
+      users: expiredUsers.map(u => ({ id: u.id, username: u.username_dial, expired_date: u.expired_date }))
+    });
 
     // Track results
     let dbSuccessCount = 0;
@@ -58,7 +73,11 @@ async function deactivateExpiredUsers() {
     // Process all database updates first (fast and reliable)
     for (const user of expiredUsers) {
       try {
-        console.log(`Deactivating user in DB: ${user.name} (${user.username_dial})`);
+        logger.info(`Processing user: ${user.name} (${user.username_dial})`, {
+          userId: user.id,
+          username: user.username_dial,
+          expiredDate: user.expired_date
+        });
 
         // Update status in database to Inactive
         const { error: updateError } = await supabase
@@ -67,11 +86,17 @@ async function deactivateExpiredUsers() {
           .eq('id', user.id);
 
         if (updateError) {
-          console.error(`Failed to update database for user ${user.username_dial}:`, updateError);
+          logger.error(`Failed to update database for user ${user.username_dial}`, {
+            error: updateError.message,
+            details: updateError,
+            userId: user.id,
+            username: user.username_dial
+          });
           dbFailCount++;
           continue;
         }
 
+        logger.info(`✓ Database updated successfully for user: ${user.username_dial}`);
         dbSuccessCount++;
 
         // Queue MikroTik update to run in background (non-blocking)
@@ -81,13 +106,21 @@ async function deactivateExpiredUsers() {
         );
 
       } catch (userError) {
-        console.error(`Error processing user ${user.username_dial}:`, userError);
+        logger.error(`Error processing user ${user.username_dial}`, {
+          error: userError.message,
+          stack: userError.stack,
+          username: user.username_dial
+        });
         dbFailCount++;
       }
     }
 
-    console.log(`Database updates completed: ${dbSuccessCount} success, ${dbFailCount} failed`);
-    console.log(`Queued ${mikrotikPromises.length} MikroTik updates to run in background...`);
+    logger.info(`Database updates completed`, {
+      success: dbSuccessCount,
+      failed: dbFailCount,
+      total: expiredUsers.length
+    });
+    logger.info(`Queued ${mikrotikPromises.length} MikroTik updates to run in background`);
 
     // Run all MikroTik updates in parallel (non-blocking)
     // Using Promise.allSettled to ensure all attempts complete regardless of failures
@@ -96,17 +129,29 @@ async function deactivateExpiredUsers() {
         .then(results => {
           const successful = results.filter(r => r.status === 'fulfilled').length;
           const failed = results.filter(r => r.status === 'rejected').length;
-          console.log(`MikroTik updates completed: ${successful} success, ${failed} failed`);
+          logger.info(`MikroTik updates completed`, {
+            successful: successful,
+            failed: failed,
+            total: results.length
+          });
         })
         .catch(error => {
-          console.error('Error in MikroTik batch update:', error);
+          logger.error('Error in MikroTik batch update', {
+            error: error.message,
+            stack: error.stack
+          });
         });
     }
 
-    console.log('Expired users deactivation process completed.', new Date().toISOString());
+    logger.info('=== Expired users deactivation process completed ===', {
+      timestamp: new Date().toISOString()
+    });
 
   } catch (error) {
-    console.error('Error in deactivateExpiredUsers:', error);
+    logger.error('Critical error in deactivateExpiredUsers', {
+      error: error.message,
+      stack: error.stack
+    });
   }
 }
 
@@ -121,9 +166,10 @@ function initializeExpiredUserScheduler() {
     timezone: 'Asia/Jakarta'
   });
 
-  console.log('Expired user scheduler initialized - will run daily at 00:30 Asia/Jakarta time');
+  logger.info('Expired user scheduler initialized - will run daily at 00:30 Asia/Jakarta time');
 
   // Also run immediately on startup
+  logger.info('Running expired user check on startup...');
   deactivateExpiredUsers();
 }
 

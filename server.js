@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const logger = require('./utils/logger');
 const mikrotikRoutes = require('./routes/mikrotik');
+const logsRoutes = require('./routes/logs');
 const errorHandler = require('./middleware/errorHandler');
 const { validateConfig } = require('./utils/validation');
 const { initializePaymentScheduler } = require('./scheduler/paymentScheduler');
@@ -63,6 +64,7 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/mikrotik', mikrotikRoutes);
+app.use('/api/logs', logsRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
