@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
-const mikrotikService = require('../services/mikrotikService');
+const MikrotikService = require('../services/mikrotikService');
 const logger = require('../utils/logger');
 
 // Initialize Supabase client
@@ -8,6 +8,8 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+const mikrotikService = new MikrotikService();
 
 /**
  * Update user status in MikroTik (async, non-blocking)
@@ -38,12 +40,17 @@ async function deactivateExpiredUsers() {
   try {
     logger.info('=== Starting expired users check ===', { timestamp: new Date().toISOString() });
 
-    // Get all active users whose expired_date has passed
+    // Calculate date 2 days ago (grace period)
+    const twoDaysAgo = new Date();
+    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+    const gracePeriodDate = twoDaysAgo.toISOString().split('T')[0];
+
+    // Get all active users whose expired_date was more than 2 days ago
     const { data: expiredUsers, error: fetchError } = await supabase
       .from('users')
       .select('id, name, username_dial, expired_date')
       .eq('user_status', 'Active')
-      .lt('expired_date', new Date().toISOString().split('T')[0]);
+      .lt('expired_date', gracePeriodDate);
 
     if (fetchError) {
       logger.error('Error fetching expired users from database', {
