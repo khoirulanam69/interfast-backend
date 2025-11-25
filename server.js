@@ -65,6 +65,7 @@ app.get('/health', (req, res) => {
 // API routes
 app.use('/api/mikrotik', mikrotikRoutes);
 app.use('/api/logs', logsRoutes);
+app.use('/cron', require('./routes/cronRoute'));
 
 // 404 handler
 app.use('*', (req, res) => {
