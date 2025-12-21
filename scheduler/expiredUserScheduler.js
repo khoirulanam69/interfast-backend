@@ -38,17 +38,15 @@ async function deactivateExpiredUsers() {
   try {
     logger.info('=== Starting expired users check ===', { timestamp: new Date().toISOString() });
 
-    // Calculate date 2 days ago (grace period)
-    const twoDaysAgo = new Date();
-    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-    const gracePeriodDate = twoDaysAgo.toISOString().split('T')[0];
+    // Get today's date (no grace period - disable exactly on expired date)
+    const today = new Date().toISOString().split('T')[0];
 
-    // Get all active users whose expired_date was more than 2 days ago
+    // Get all active users whose expired_date is today or in the past
     const { data: expiredUsers, error: fetchError } = await supabase
       .from('users')
       .select('id, name, username_dial, expired_date')
       .eq('user_status', 'Active')
-      .lt('expired_date', gracePeriodDate);
+      .lte('expired_date', today);
 
     if (fetchError) {
       logger.error('Error fetching expired users from database', {

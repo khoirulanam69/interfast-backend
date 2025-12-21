@@ -31,17 +31,15 @@ async function deactivateExpiredUsers() {
   logger.info("=== Cron: Checking expired users ===");
 
   try {
-    // Hitung tanggal 2 hari lalu (grace period)
-    const twoDaysAgo = new Date();
-    twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-    const gracePeriod = twoDaysAgo.toISOString().split("T")[0];
+    // Get today's date (no grace period - disable exactly on expired date)
+    const today = new Date().toISOString().split("T")[0];
 
-    // Ambil user expired
+    // Ambil user expired (expired_date <= today)
     const { data: expiredUsers, error: fetchError } = await supabase
       .from("users")
       .select("id, username_dial, name, expired_date")
       .eq("user_status", "Active")
-      .lt("expired_date", gracePeriod);
+      .lte("expired_date", today);
 
     if (fetchError) {
       logger.error("DB error fetching expired users", { error: fetchError.message });
