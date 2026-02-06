@@ -16,6 +16,7 @@ const { initializeExpiredUserScheduler } = require('./scheduler/expiredUserSched
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+app.set('trust proxy', 1);
 
 // Validate configuration on startup
 validateConfig();
