@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const logger = require('./utils/logger');
 const mikrotikRoutes = require('./routes/mikrotik');
+const logsRoutes = require('./routes/logs');
 const errorHandler = require('./middleware/errorHandler');
 const { validateConfig } = require('./utils/validation');
 const { initializePaymentScheduler } = require('./scheduler/paymentScheduler');
@@ -15,6 +16,7 @@ const { initializeExpiredUserScheduler } = require('./scheduler/expiredUserSched
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+app.set('trust proxy', 1);
 
 // Validate configuration on startup
 validateConfig();
@@ -63,6 +65,8 @@ app.get('/health', (req, res) => {
 
 // API routes
 app.use('/api/mikrotik', mikrotikRoutes);
+app.use('/api/logs', logsRoutes);
+app.use('/cron', require('./routes/cronRoute'));
 
 // 404 handler
 app.use('*', (req, res) => {
