@@ -1,20 +1,21 @@
+const express = require("express");
+const cors = require("cors");
+const helmet = require("helmet");
+const compression = require("compression");
+const rateLimit = require("express-rate-limit");
+require("dotenv").config();
 
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-const rateLimit = require('express-rate-limit');
-require('dotenv').config();
-
-const logger = require('./utils/logger');
-const mikrotikRoutes = require('./routes/mikrotik');
-const logsRoutes = require('./routes/logs');
-const databaseRoutes = require('./routes/database');
-const errorHandler = require('./middleware/errorHandler');
-const { validateConfig } = require('./utils/validation');
-const { initializePaymentScheduler } = require('./scheduler/paymentScheduler');
-const { initializeExpiredUserScheduler } = require('./scheduler/expiredUserScheduler');
-const db = require('./config/database');
+const logger = require("./utils/logger");
+const mikrotikRoutes = require("./routes/mikrotik");
+const logsRoutes = require("./routes/logs");
+const databaseRoutes = require("./routes/database");
+const errorHandler = require("./middleware/errorHandler");
+const { validateConfig } = require("./utils/validation");
+const { initializePaymentScheduler } = require("./scheduler/paymentScheduler");
+const {
+  initializeExpiredUserScheduler,
+} = require("./scheduler/expiredUserScheduler");
+const db = require("./config/database");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -23,11 +24,13 @@ const PORT = process.env.PORT || 3001;
 validateConfig();
 
 // Test database connection
-db.testConnection().then(connected => {
+db.testConnection().then((connected) => {
   if (connected) {
-    logger.info('PostgreSQL database connected successfully');
+    logger.info("PostgreSQL database connected successfully");
   } else {
-    logger.warn('PostgreSQL database connection failed - some features may not work');
+    logger.warn(
+      "PostgreSQL database connection failed - some features may not work",
+    );
   }
 });
 
@@ -35,27 +38,31 @@ db.testConnection().then(connected => {
 app.use(helmet());
 app.use(compression());
 
+// CORS configuration
+const corsOptions = {
+  origin: process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(",")
+    : ["http://localhost:5173", "http://localhost:3000"],
+  credentials: true,
+  optionsSuccessStatus: 200,
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: "Too many requests from this IP, please try again later.",
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
 });
 app.use(limiter);
 
-// CORS configuration
-const corsOptions = {
-  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : ['http://localhost:5173', 'http://localhost:3000'],
-  credentials: true,
-  optionsSuccessStatus: 200
-};
-app.use(cors(corsOptions));
-
 // Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Request logging
 app.use((req, res, next) => {
@@ -64,26 +71,26 @@ app.use((req, res, next) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.status(200).json({
-    status: 'OK',
+    status: "OK",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || "development",
   });
 });
 
 // API routes
-app.use('/api/mikrotik', mikrotikRoutes);
-app.use('/api/logs', logsRoutes);
-app.use('/db', databaseRoutes);
-app.use('/cron', require('./routes/cronRoute'));
+app.use("/api/mikrotik", mikrotikRoutes);
+app.use("/api/logs", logsRoutes);
+app.use("/db", databaseRoutes);
+app.use("/cron", require("./routes/cronRoute"));
 
 // 404 handler
-app.use('*', (req, res) => {
+app.use("*", (req, res) => {
   res.status(404).json({
     success: false,
-    message: 'Endpoint not found'
+    message: "Endpoint not found",
   });
 });
 
@@ -91,20 +98,20 @@ app.use('*', (req, res) => {
 app.use(errorHandler);
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down gracefully');
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received, shutting down gracefully");
   process.exit(0);
 });
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT received, shutting down gracefully');
+process.on("SIGINT", () => {
+  logger.info("SIGINT received, shutting down gracefully");
   process.exit(0);
 });
 
 app.listen(PORT, () => {
   logger.info(`Interfast Media Backend Server running on port ${PORT}`);
-  logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  
+  logger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
+
   // Initialize schedulers
   initializePaymentScheduler();
   initializeExpiredUserScheduler();
