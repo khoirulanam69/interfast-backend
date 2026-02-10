@@ -9,17 +9,27 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 const mikrotikRoutes = require('./routes/mikrotik');
 const logsRoutes = require('./routes/logs');
+const databaseRoutes = require('./routes/database');
 const errorHandler = require('./middleware/errorHandler');
 const { validateConfig } = require('./utils/validation');
 const { initializePaymentScheduler } = require('./scheduler/paymentScheduler');
 const { initializeExpiredUserScheduler } = require('./scheduler/expiredUserScheduler');
+const db = require('./config/database');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-app.set('trust proxy', 1);
 
 // Validate configuration on startup
 validateConfig();
+
+// Test database connection
+db.testConnection().then(connected => {
+  if (connected) {
+    logger.info('PostgreSQL database connected successfully');
+  } else {
+    logger.warn('PostgreSQL database connection failed - some features may not work');
+  }
+});
 
 // Security middleware
 app.use(helmet());
@@ -66,6 +76,7 @@ app.get('/health', (req, res) => {
 // API routes
 app.use('/api/mikrotik', mikrotikRoutes);
 app.use('/api/logs', logsRoutes);
+app.use('/db', databaseRoutes);
 app.use('/cron', require('./routes/cronRoute'));
 
 // 404 handler
