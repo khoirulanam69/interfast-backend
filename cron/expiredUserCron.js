@@ -1,11 +1,12 @@
 const { createClient } = require("@supabase/supabase-js");
 const mikrotikService = require("../services/mikrotikService");
 const logger = require("../utils/logger");
+const { DateTime } = require("luxon");
 
 // --- Supabase Initialization ---
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 /**
@@ -32,7 +33,7 @@ async function deactivateExpiredUsers() {
 
   try {
     // Get today's date (no grace period - disable exactly on expired date)
-    const today = new Date().toISOString().split("T")[0];
+    const today = DateTime.now().setZone("Asia/Jakarta").toFormat("yyyy-MM-dd");
 
     // Ambil user expired (expired_date <= today)
     const { data: expiredUsers, error: fetchError } = await supabase
@@ -42,9 +43,7 @@ async function deactivateExpiredUsers() {
       .lte("expired_date", today);
 
     if (fetchError) {
-      logger.error("DB error fetching expired users", {
-        error: fetchError.message,
-      });
+      logger.error("DB error fetching expired users", { error: fetchError.message });
       return { status: "error", message: fetchError.message };
     }
 
@@ -70,9 +69,7 @@ async function deactivateExpiredUsers() {
         .eq("id", id);
 
       if (updateError) {
-        logger.error(`DB update failed for ${username_dial}`, {
-          error: updateError.message,
-        });
+        logger.error(`DB update failed for ${username_dial}`, { error: updateError.message });
         continue;
       }
 
@@ -89,10 +86,7 @@ async function deactivateExpiredUsers() {
 
     return { status: "success" };
   } catch (err) {
-    logger.error("Fatal error in cron", {
-      error: err.message,
-      stack: err.stack,
-    });
+    logger.error("Fatal error in cron", { error: err.message, stack: err.stack });
     return { status: "error", message: err.message };
   }
 }

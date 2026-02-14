@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
 const mikrotikService = require('../services/mikrotikService');
 const logger = require('../utils/logger');
+const { DateTime } = require('luxon');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -39,7 +40,7 @@ async function deactivateExpiredUsers() {
     logger.info('=== Starting expired users check ===', { timestamp: new Date().toISOString() });
 
     // Get today's date (no grace period - disable exactly on expired date)
-    const today = new Date().toISOString().split('T')[0];
+    const today = DateTime.now().setZone('Asia/Jakarta').toFormat('yyyy-MM-dd');
 
     // Get all active users whose expired_date is today or in the past
     const { data: expiredUsers, error: fetchError } = await supabase
