@@ -70,7 +70,7 @@ router.post('/users', async (req, res) => {
       RETURNING *`,
       [
         nik, name, address, rt_rw, village, city, province, country || 'Indonesia',
-        phone, pkg || 'Interfast Bronze', price || 100000, referred_by || null,
+        phone, pkg, price, referred_by || null,
         installation_date, expired_date, username_dial, password_pppoe,
         payment_status || 'Unpaid', user_status || 'Active'
       ]
