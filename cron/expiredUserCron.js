@@ -40,7 +40,7 @@ async function deactivateExpiredUsers() {
       .from("users")
       .select("id, username_dial, name, expired_date")
       .eq("user_status", "Active")
-      .lte("expired_date", today);
+      .lt("expired_date", today);
 
     if (fetchError) {
       logger.error("DB error fetching expired users", { error: fetchError.message });
