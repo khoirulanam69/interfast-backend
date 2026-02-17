@@ -1,13 +1,7 @@
-const { createClient } = require("@supabase/supabase-js");
+const { query } = require("../config/database");
 const mikrotikService = require("../services/mikrotikService");
 const logger = require("../utils/logger");
 const { DateTime } = require("luxon");
-
-// --- Supabase Initialization ---
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
 
 /**
  * Update MikroTik status
@@ -32,20 +26,17 @@ async function deactivateExpiredUsers() {
   logger.info("=== Cron: Checking expired users ===");
 
   try {
-    // Get today's date (no grace period - disable exactly on expired date)
     const today = DateTime.now().setZone("Asia/Jakarta").toFormat("yyyy-MM-dd");
 
-    // Ambil user expired (expired_date <= today)
-    const { data: expiredUsers, error: fetchError } = await supabase
-      .from("users")
-      .select("id, username_dial, name, expired_date")
-      .eq("user_status", "Active")
-      .lt("expired_date", today);
+    // Fetch expired active users from PostgreSQL
+    const result = await query(
+      `SELECT id, username_dial, name, expired_date 
+       FROM users 
+       WHERE user_status = 'Active' AND expired_date < $1`,
+      [today]
+    );
 
-    if (fetchError) {
-      logger.error("DB error fetching expired users", { error: fetchError.message });
-      return { status: "error", message: fetchError.message };
-    }
+    const expiredUsers = result.rows;
 
     if (!expiredUsers || expiredUsers.length === 0) {
       logger.info("No expired users found.");
@@ -58,32 +49,24 @@ async function deactivateExpiredUsers() {
 
     const mikrotikQueue = [];
 
-    // Update DB + queue MikroTik
     for (const user of expiredUsers) {
       const { id, username_dial } = user;
 
-      // Update DB
-      const { error: updateError } = await supabase
-        .from("users")
-        .update({ user_status: "Inactive" })
-        .eq("id", id);
-
-      if (updateError) {
+      try {
+        await query(
+          `UPDATE users SET user_status = 'Inactive', updated_at = NOW() WHERE id = $1`,
+          [id]
+        );
+        logger.info(`✓ User status set to Inactive in DB: ${username_dial}`);
+        mikrotikQueue.push(updateMikroTikStatus(username_dial, "Inactive"));
+      } catch (updateError) {
         logger.error(`DB update failed for ${username_dial}`, { error: updateError.message });
-        continue;
       }
-
-      logger.info(`✓ User status set to Inactive in DB: ${username_dial}`);
-
-      // Tambahkan ke queue update MikroTik
-      mikrotikQueue.push(updateMikroTikStatus(username_dial, "Inactive"));
     }
 
-    // Jalankan update MikroTik paralel
     await Promise.allSettled(mikrotikQueue);
 
     logger.info("=== Expired users deactivation complete ===");
-
     return { status: "success" };
   } catch (err) {
     logger.error("Fatal error in cron", { error: err.message, stack: err.stack });
