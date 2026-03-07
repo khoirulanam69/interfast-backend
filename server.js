@@ -9,6 +9,8 @@ require('dotenv').config();
 const logger = require('./utils/logger');
 const mikrotikRoutes = require('./routes/mikrotik');
 const logsRoutes = require('./routes/logs');
+const authRoutes = require('./routes/auth');
+const { authenticateToken } = require('./middleware/auth');
 const databaseRoutes = require('./routes/database');
 const errorHandler = require('./middleware/errorHandler');
 const { validateConfig } = require('./utils/validation');
@@ -74,11 +76,14 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes
-app.use('/api/mikrotik', mikrotikRoutes);
-app.use('/api/logs', logsRoutes);
-app.use('/db', databaseRoutes);
-app.use('/cron', require('./routes/cronRoute'));
+// Public routes
+app.use('/api/auth', authRoutes);
+
+// Protected API routes
+app.use('/api/mikrotik', authenticateToken, mikrotikRoutes);
+app.use('/api/logs', authenticateToken, logsRoutes);
+app.use('/db', authenticateToken, databaseRoutes);
+app.use('/cron', authenticateToken, require('./routes/cronRoute'));
 
 // 404 handler
 app.use('*', (req, res) => {
