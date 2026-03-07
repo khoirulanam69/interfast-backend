@@ -242,8 +242,12 @@ router.get('/transactions', async (req, res) => {
     const params = [];
     
     if (month && year) {
-      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-      const endDate = new Date(parseInt(year), parseInt(month), 0).toISOString().split('T')[0];
+      const m = parseInt(month);
+      const y = parseInt(year);
+      const startDate = `${y}-${String(m).padStart(2, '0')}-01`;
+      // Calculate last day without toISOString to avoid timezone shift
+      const lastDay = new Date(y, m, 0).getDate();
+      const endDate = `${y}-${String(m).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
       query += ' WHERE transaction_date >= $1 AND transaction_date <= $2';
       params.push(startDate, endDate);
     }
@@ -372,24 +376,22 @@ router.get('/financial-summary', async (req, res) => {
 // Helper function to update financial summary
 async function updateFinancialSummary(month, year) {
   try {
+    const lastDay = new Date(year, month, 0).getDate();
     const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-    const endDate = new Date(year, month, 0).toISOString().split('T')[0];
+    const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
-    // Calculate totals
-    const incomeResult = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM financial_transactions 
-       WHERE transaction_type = 'income' AND transaction_date >= $1 AND transaction_date <= $2`,
+    // Calculate totals using single query for accuracy
+    const result = await db.query(
+      `SELECT 
+         COALESCE(SUM(CASE WHEN transaction_type = 'income' THEN amount ELSE 0 END), 0)::bigint as total_income,
+         COALESCE(SUM(CASE WHEN transaction_type = 'expense' THEN amount ELSE 0 END), 0)::bigint as total_expense
+       FROM financial_transactions 
+       WHERE transaction_date >= $1 AND transaction_date <= $2`,
       [startDate, endDate]
     );
 
-    const expenseResult = await db.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM financial_transactions 
-       WHERE transaction_type = 'expense' AND transaction_date >= $1 AND transaction_date <= $2`,
-      [startDate, endDate]
-    );
-
-    const totalIncome = parseInt(incomeResult.rows[0].total);
-    const totalExpense = parseInt(expenseResult.rows[0].total);
+    const totalIncome = parseInt(result.rows[0].total_income);
+    const totalExpense = parseInt(result.rows[0].total_expense);
     const netProfit = totalIncome - totalExpense;
 
     // Upsert summary
