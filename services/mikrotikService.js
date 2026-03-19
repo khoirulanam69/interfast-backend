@@ -205,7 +205,7 @@ class MikrotikService {
             logger.info(`Enabled PPP secret: ${usernameDialer}`);
           }
         } else {
-          logger.info(`PPP secret not found: ${usernameDialer}`);
+          logger.info(`Found secrets for ${usernameDialer}:`, secrets.map(s => s.name));
         }
 
         return { success: true, message: `User ${usernameDialer} status updated to ${status}` };
