@@ -32,7 +32,7 @@ async function deactivateExpiredUsers() {
     const result = await query(
       `SELECT id, username_dial, name, expired_date 
        FROM users 
-       WHERE user_status = 'Active' AND expired_date < $1`,
+       WHERE expired_date + INTERVAL '1 day' < $1`,
       [today]
     );
 
