@@ -73,20 +73,16 @@ class MikrotikService {
    */
   async safeMenuOp(operation, description, isWriteOp = false) {
     try {
-      logger.info(`MikroTik [${description}]: executing...`);
       const result = await operation();
-      logger.info(`MikroTik [${description}]: success`);
       return result;
     } catch (error) {
       const msg = error.message || '';
       const isEmptyReply = msg.includes('!empty') || msg.includes('unknown reply');
   
-      if (isEmptyReply) {
-        logger.warn(`MikroTik [${description}]: empty reply, returning []`);
-        return []; // ✅ HANDLE SEMUA, bukan cuma write
+      if (isEmptyReply && !isWriteOp) {
+        return [];
       }
   
-      logger.error(`MikroTik error [${description}]: ${msg}`);
       throw error;
     }
   }
