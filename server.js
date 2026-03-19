@@ -83,7 +83,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/mikrotik', authenticateToken, mikrotikRoutes);
 app.use('/api/logs', authenticateToken, logsRoutes);
 app.use('/db', authenticateToken, databaseRoutes);
-app.use('/cron', authenticateToken, require('./routes/cronRoute'));
+app.use('/cron', require('./routes/cronRoute'));
 
 // 404 handler
 app.use('*', (req, res) => {
