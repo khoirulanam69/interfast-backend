@@ -14,8 +14,6 @@ async function withRetry(operation, description, retries = 3, delay = 1500) {
         msg.includes('ECONNREFUSED') ||
         msg.includes('ETIMEDOUT') ||
         msg.includes('ECONNRESET') ||
-        msg.includes('!empty') ||
-        msg.includes('unknown reply') ||
         msg.includes('Timeout');
 
       if (isTransient && attempt < retries) {
@@ -82,12 +80,12 @@ class MikrotikService {
     } catch (error) {
       const msg = error.message || '';
       const isEmptyReply = msg.includes('!empty') || msg.includes('unknown reply');
-
-      if (isEmptyReply && isWriteOp) {
-        logger.warn(`MikroTik [${description}]: Got !empty reply for write op, treating as success`);
-        return [];
+  
+      if (isEmptyReply) {
+        logger.warn(`MikroTik [${description}]: empty reply, returning []`);
+        return []; // ✅ HANDLE SEMUA, bukan cuma write
       }
-
+  
       logger.error(`MikroTik error [${description}]: ${msg}`);
       throw error;
     }
