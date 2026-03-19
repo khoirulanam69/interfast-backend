@@ -1,4 +1,4 @@
-const { RouterOSClient } = require('routeros-client');
+const { RouterOSAPI } = require('node-routeros');
 const logger = require('../utils/logger');
 
 /**
@@ -14,7 +14,8 @@ async function withRetry(operation, description, retries = 3, delay = 1500) {
         msg.includes('ECONNREFUSED') ||
         msg.includes('ETIMEDOUT') ||
         msg.includes('ECONNRESET') ||
-        msg.includes('Timeout');
+        msg.includes('Timeout') ||
+        msg.includes('Socket got disconnected');
 
       if (isTransient && attempt < retries) {
         logger.warn(`[Retry ${attempt}/${retries}] ${description} failed: ${msg}. Retrying in ${delay}ms...`);
@@ -38,110 +39,116 @@ class MikrotikService {
   }
 
   /**
-   * Create a new RouterOSClient instance and connect.
-   * Returns { api, client } — caller MUST call api.close() in finally block.
+   * Create a new RouterOSAPI connection.
+   * Returns the connected conn — caller MUST call safeClose(conn) in finally block.
    */
   async connect() {
-    const api = new RouterOSClient({
+    const conn = new RouterOSAPI({
       host: this.config.host,
       user: this.config.user,
       password: this.config.password,
       port: this.config.port,
-      timeout: this.config.timeout,
-      keepalive: true
+      timeout: this.config.timeout
     });
 
-    const client = await api.connect();
-    logger.info('Connected to MikroTik via routeros-client');
-    return { api, client };
+    await conn.connect();
+    logger.info('Connected to MikroTik via node-routeros');
+    return conn;
   }
 
   /**
-   * Safely close the API connection
+   * Safely close the connection
    */
-  safeClose(api) {
+  safeClose(conn) {
     try {
-      if (api) api.close();
+      if (conn) conn.close();
     } catch (e) {
       logger.warn('Error closing MikroTik connection:', e.message);
     }
   }
 
   /**
-   * Safe menu operation wrapper — catches !empty and unknown reply errors
-   * for write operations and treats them as success.
+   * Execute a write command with logging and error handling.
+   * For write operations (add/set/remove), empty responses or certain errors are treated as success.
    */
-  async safeMenuOp(operation, description, isWriteOp = false) {
+  async execute(conn, command, params = [], description = '', isWriteOp = false) {
     try {
-      const result = await operation();
-      return result;
+      logger.info(`MikroTik [${description}]: executing ${command}...`);
+      const args = Array.isArray(params) && params.length > 0 ? [command, ...params] : command;
+      const result = await conn.write(args);
+      logger.info(`MikroTik [${description}]: success (${Array.isArray(result) ? result.length : 0} items)`);
+      return result || [];
     } catch (error) {
       const msg = error.message || '';
-      const isEmptyReply = msg.includes('!empty') || msg.includes('unknown reply');
-  
-      if (isEmptyReply && !isWriteOp) {
+
+      // For write ops, treat "no such item" or empty errors as non-fatal
+      if (isWriteOp && (msg.includes('no such item') || msg.includes('already have'))) {
+        logger.warn(`MikroTik [${description}]: ${msg} — treating as handled`);
         return [];
       }
-  
+
+      logger.error(`MikroTik error [${description}]: ${msg}`);
       throw error;
     }
+  }
+
+  /**
+   * Helper: find item .id by filtering a menu print with a field=value match.
+   */
+  async findItemId(conn, menu, field, value, description) {
+    const items = await this.execute(conn, `${menu}/print`, [`?${field}=${value}`], description);
+    if (Array.isArray(items) && items.length > 0) {
+      return { id: items[0]['.id'], item: items[0], items };
+    }
+    return { id: null, item: null, items: items || [] };
   }
 
   // ==================== SYSTEM ====================
 
   async testConnection() {
-    let api;
+    let conn;
     try {
       logger.info('Testing MikroTik connection...');
-      ({ api } = await this.connect());
+      conn = await this.connect();
       return { success: true, message: 'MikroTik connection successful' };
     } catch (error) {
       logger.error('MikroTik connection error:', error);
       return { success: false, message: `Connection failed: ${error.message}` };
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getSystemIdentity() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const result = await this.safeMenuOp(
-        () => client.menu('/system/identity').getOnly(),
-        'system-identity'
-      );
-      return result ? [result] : [];
+      conn = await this.connect();
+      const result = await this.execute(conn, '/system/identity/print', [], 'system-identity');
+      return result || [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getSystemResource() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const result = await this.safeMenuOp(
-        () => client.menu('/system/resource').getOnly(),
-        'system-resource'
-      );
-      return result ? [result] : [];
+      conn = await this.connect();
+      const result = await this.execute(conn, '/system/resource/print', [], 'system-resource');
+      return result || [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getSystemClock() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const result = await this.safeMenuOp(
-        () => client.menu('/system/clock').getOnly(),
-        'system-clock'
-      );
-      return result ? [result] : [];
+      conn = await this.connect();
+      const result = await this.execute(conn, '/system/clock/print', [], 'system-clock');
+      return result || [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
@@ -153,26 +160,25 @@ class MikrotikService {
     }
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
         logger.info(`Updating MikroTik user status for ${usernameDialer} to ${status}`);
-        ({ api, client } = await this.connect());
+        conn = await this.connect();
 
         // Remove active connections first
         try {
-          const activeMenu = client.menu('/ppp/active');
-          const activeUsers = await this.safeMenuOp(
-            () => activeMenu.where('name', usernameDialer).getAll(),
+          const activeItems = await this.execute(
+            conn, '/ppp/active/print', [`?name=${usernameDialer}`],
             `active-print-${usernameDialer}`
           );
-
-          if (Array.isArray(activeUsers)) {
-            for (const activeUser of activeUsers) {
-              await this.safeMenuOp(
-                () => activeUser.remove(),
-                `active-remove-${usernameDialer}`,
-                true
-              );
+          if (Array.isArray(activeItems)) {
+            for (const item of activeItems) {
+              if (item['.id']) {
+                await this.execute(
+                  conn, '/ppp/active/remove', [`=.id=${item['.id']}`],
+                  `active-remove-${usernameDialer}`, true
+                );
+              }
             }
           }
           logger.info(`Removed PPP active connections: ${usernameDialer}`);
@@ -181,36 +187,29 @@ class MikrotikService {
         }
 
         // Handle PPP secret based on status
-        const secretMenu = client.menu('/ppp/secret');
-        const secrets = await this.safeMenuOp(
-          () => secretMenu.where('name', usernameDialer).getAll(),
-          `secret-print-${usernameDialer}`
-        );
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', usernameDialer, `secret-print-${usernameDialer}`);
 
-        if (Array.isArray(secrets) && secrets.length > 0) {
-          const secret = secrets[0];
+        if (id) {
           if (status === 'Inactive' || status === 'Terminate') {
-            await this.safeMenuOp(
-              () => secret.update({ disabled: 'yes' }),
-              `secret-disable-${usernameDialer}`,
-              true
+            await this.execute(
+              conn, '/ppp/secret/set', [`=.id=${id}`, '=disabled=yes'],
+              `secret-disable-${usernameDialer}`, true
             );
             logger.info(`Disabled PPP secret: ${usernameDialer}`);
           } else if (status === 'Active') {
-            await this.safeMenuOp(
-              () => secret.update({ disabled: 'no' }),
-              `secret-enable-${usernameDialer}`,
-              true
+            await this.execute(
+              conn, '/ppp/secret/set', [`=.id=${id}`, '=disabled=no'],
+              `secret-enable-${usernameDialer}`, true
             );
             logger.info(`Enabled PPP secret: ${usernameDialer}`);
           }
         } else {
-          logger.info(`Found secrets for ${usernameDialer}:`, secrets.map(s => s.name));
+          logger.info(`PPP secret not found: ${usernameDialer}`);
         }
 
         return { success: true, message: `User ${usernameDialer} status updated to ${status}` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `updateUserStatus(${usernameDialer}, ${status})`);
   }
@@ -221,21 +220,22 @@ class MikrotikService {
     }
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
         logger.info(`Regenerating credentials from ${oldUsername} to ${newUsername} with profile ${profile}`);
-        ({ api, client } = await this.connect());
+        conn = await this.connect();
 
         // Remove active connections for old username
         try {
-          const activeMenu = client.menu('/ppp/active');
-          const activeUsers = await this.safeMenuOp(
-            () => activeMenu.where('name', oldUsername).getAll(),
+          const activeItems = await this.execute(
+            conn, '/ppp/active/print', [`?name=${oldUsername}`],
             `active-print-${oldUsername}`
           );
-          if (Array.isArray(activeUsers)) {
-            for (const activeUser of activeUsers) {
-              await this.safeMenuOp(() => activeUser.remove(), `active-remove-${oldUsername}`, true);
+          if (Array.isArray(activeItems)) {
+            for (const item of activeItems) {
+              if (item['.id']) {
+                await this.execute(conn, '/ppp/active/remove', [`=.id=${item['.id']}`], `active-remove-${oldUsername}`, true);
+              }
             }
           }
         } catch (error) {
@@ -243,51 +243,37 @@ class MikrotikService {
         }
 
         // Find existing PPP secret
-        const secretMenu = client.menu('/ppp/secret');
-        const secrets = await this.safeMenuOp(
-          () => secretMenu.where('name', oldUsername).getAll(),
-          `secret-print-${oldUsername}`
-        );
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', oldUsername, `secret-print-${oldUsername}`);
 
-        if (Array.isArray(secrets) && secrets.length > 0) {
+        if (id) {
           // Update existing secret
-          await this.safeMenuOp(
-            () => secrets[0].update({
-              name: newUsername,
-              password: newPassword,
-              profile: profile,
-              disabled: 'no'
-            }),
-            `secret-update-${oldUsername}->${newUsername}`,
-            true
+          await this.execute(
+            conn, '/ppp/secret/set',
+            [`=.id=${id}`, `=name=${newUsername}`, `=password=${newPassword}`, `=profile=${profile}`, '=disabled=no'],
+            `secret-update-${oldUsername}->${newUsername}`, true
           );
           logger.info(`Updated PPP secret from ${oldUsername} to ${newUsername} with profile ${profile}`);
         } else {
           // Create new secret if old one doesn't exist
-          await this.safeMenuOp(
-            () => secretMenu.add({
-              name: newUsername,
-              password: newPassword,
-              profile: profile,
-              service: 'pppoe',
-              disabled: 'no'
-            }),
-            `secret-add-${newUsername}`,
-            true
+          await this.execute(
+            conn, '/ppp/secret/add',
+            [`=name=${newUsername}`, `=password=${newPassword}`, `=profile=${profile}`, '=service=pppoe', '=disabled=no'],
+            `secret-add-${newUsername}`, true
           );
           logger.info(`Created new PPP secret: ${newUsername} with profile ${profile}`);
         }
 
         // Remove active connections for new username
         try {
-          const activeMenu = client.menu('/ppp/active');
-          const newActiveUsers = await this.safeMenuOp(
-            () => activeMenu.where('name', newUsername).getAll(),
+          const newActiveItems = await this.execute(
+            conn, '/ppp/active/print', [`?name=${newUsername}`],
             `active-print-${newUsername}`
           );
-          if (Array.isArray(newActiveUsers)) {
-            for (const au of newActiveUsers) {
-              await this.safeMenuOp(() => au.remove(), `active-remove-${newUsername}`, true);
+          if (Array.isArray(newActiveItems)) {
+            for (const item of newActiveItems) {
+              if (item['.id']) {
+                await this.execute(conn, '/ppp/active/remove', [`=.id=${item['.id']}`], `active-remove-${newUsername}`, true);
+              }
             }
           }
         } catch (error) {
@@ -296,7 +282,7 @@ class MikrotikService {
 
         return { success: true, message: `Credentials regenerated successfully for ${newUsername} with profile ${profile}` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `regenerateUserCredentials(${oldUsername}->${newUsername})`);
   }
@@ -307,48 +293,34 @@ class MikrotikService {
     }
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
         logger.info(`Creating PPP secret for ${usernameDialer} with profile ${profile}`);
-        ({ api, client } = await this.connect());
-
-        const secretMenu = client.menu('/ppp/secret');
+        conn = await this.connect();
 
         // Check if secret already exists
-        const existingSecrets = await this.safeMenuOp(
-          () => secretMenu.where('name', usernameDialer).getAll(),
-          `secret-check-${usernameDialer}`
-        );
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', usernameDialer, `secret-check-${usernameDialer}`);
 
-        if (!Array.isArray(existingSecrets) || existingSecrets.length === 0) {
-          await this.safeMenuOp(
-            () => secretMenu.add({
-              name: usernameDialer,
-              password: password,
-              profile: profile,
-              service: 'pppoe'
-            }),
-            `secret-add-${usernameDialer}`,
-            true
+        if (!id) {
+          await this.execute(
+            conn, '/ppp/secret/add',
+            [`=name=${usernameDialer}`, `=password=${password}`, `=profile=${profile}`, '=service=pppoe'],
+            `secret-add-${usernameDialer}`, true
           );
           logger.info(`Created PPP secret: ${usernameDialer} with profile: ${profile}`);
         } else {
           // Secret exists, update it
           logger.info(`PPP secret already exists for ${usernameDialer}, updating profile to ${profile}`);
-          await this.safeMenuOp(
-            () => existingSecrets[0].update({
-              password: password,
-              profile: profile,
-              disabled: 'no'
-            }),
-            `secret-update-existing-${usernameDialer}`,
-            true
+          await this.execute(
+            conn, '/ppp/secret/set',
+            [`=.id=${id}`, `=password=${password}`, `=profile=${profile}`, '=disabled=no'],
+            `secret-update-existing-${usernameDialer}`, true
           );
         }
 
         return { success: true, message: `PPP secret ready for ${usernameDialer} with profile ${profile}` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `createPPPSecret(${usernameDialer})`);
   }
@@ -357,20 +329,21 @@ class MikrotikService {
     if (!username) throw new Error('username is required');
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
+        conn = await this.connect();
 
         // Remove active connections
         try {
-          const activeMenu = client.menu('/ppp/active');
-          const activeUsers = await this.safeMenuOp(
-            () => activeMenu.where('name', username).getAll(),
+          const activeItems = await this.execute(
+            conn, '/ppp/active/print', [`?name=${username}`],
             `active-print-${username}`
           );
-          if (Array.isArray(activeUsers)) {
-            for (const au of activeUsers) {
-              await this.safeMenuOp(() => au.remove(), `active-remove-${username}`, true);
+          if (Array.isArray(activeItems)) {
+            for (const item of activeItems) {
+              if (item['.id']) {
+                await this.execute(conn, '/ppp/active/remove', [`=.id=${item['.id']}`], `active-remove-${username}`, true);
+              }
             }
           }
         } catch (error) {
@@ -378,23 +351,17 @@ class MikrotikService {
         }
 
         // Remove PPP secret
-        const secretMenu = client.menu('/ppp/secret');
-        const secrets = await this.safeMenuOp(
-          () => secretMenu.where('name', username).getAll(),
-          `secret-print-${username}`
-        );
-
-        if (Array.isArray(secrets) && secrets.length > 0) {
-          await this.safeMenuOp(
-            () => secrets[0].remove(),
-            `secret-remove-${username}`,
-            true
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', username, `secret-print-${username}`);
+        if (id) {
+          await this.execute(
+            conn, '/ppp/secret/remove', [`=.id=${id}`],
+            `secret-remove-${username}`, true
           );
         }
 
         return { success: true, message: `User ${username} removed successfully` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `removeUser(${username})`);
   }
@@ -403,22 +370,16 @@ class MikrotikService {
     if (!username) throw new Error('username is required');
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
         logger.info(`Deleting PPP secret for ${username}`);
-        ({ api, client } = await this.connect());
+        conn = await this.connect();
 
-        const secretMenu = client.menu('/ppp/secret');
-        const secrets = await this.safeMenuOp(
-          () => secretMenu.where('name', username).getAll(),
-          `secret-print-${username}`
-        );
-
-        if (Array.isArray(secrets) && secrets.length > 0) {
-          await this.safeMenuOp(
-            () => secrets[0].remove(),
-            `secret-remove-${username}`,
-            true
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', username, `secret-print-${username}`);
+        if (id) {
+          await this.execute(
+            conn, '/ppp/secret/remove', [`=.id=${id}`],
+            `secret-remove-${username}`, true
           );
           logger.info(`PPP secret deleted for ${username}`);
         } else {
@@ -427,7 +388,7 @@ class MikrotikService {
 
         return { success: true, message: `PPP secret deleted for ${username}` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `deletePPPSecret(${username})`);
   }
@@ -436,27 +397,28 @@ class MikrotikService {
     if (!username) throw new Error('username is required');
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
         logger.info(`Disconnecting PPP user ${username}`);
-        ({ api, client } = await this.connect());
+        conn = await this.connect();
 
-        const activeMenu = client.menu('/ppp/active');
-        const activeUsers = await this.safeMenuOp(
-          () => activeMenu.where('name', username).getAll(),
+        const activeItems = await this.execute(
+          conn, '/ppp/active/print', [`?name=${username}`],
           `active-print-${username}`
         );
 
-        if (Array.isArray(activeUsers)) {
-          for (const au of activeUsers) {
-            await this.safeMenuOp(() => au.remove(), `active-remove-${username}`, true);
-            logger.info(`Disconnected active connection for ${username}`);
+        if (Array.isArray(activeItems)) {
+          for (const item of activeItems) {
+            if (item['.id']) {
+              await this.execute(conn, '/ppp/active/remove', [`=.id=${item['.id']}`], `active-remove-${username}`, true);
+              logger.info(`Disconnected active connection for ${username}`);
+            }
           }
         }
 
         return { success: true, message: `PPP user ${username} disconnected` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `disconnectPPPUser(${username})`);
   }
@@ -464,74 +426,54 @@ class MikrotikService {
   // ==================== INTERFACE MANAGEMENT ====================
 
   async getInterfaces() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/interface').getAll(),
-        'interfaces-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/interface/print', [], 'interfaces-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getInterfaceDetails(name) {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const details = await this.safeMenuOp(
-        () => client.menu('/interface').where('name', name).getAll(),
-        `interface-detail-${name}`
-      );
-      return (Array.isArray(details) && details.length > 0) ? details[0] : null;
+      conn = await this.connect();
+      const { item } = await this.findItemId(conn, '/interface', 'name', name, `interface-detail-${name}`);
+      return item;
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async enableInterface(name) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const interfaces = await this.safeMenuOp(
-          () => client.menu('/interface').where('name', name).getAll(),
-          `interface-print-${name}`
-        );
-        if (Array.isArray(interfaces) && interfaces.length > 0) {
-          await this.safeMenuOp(
-            () => interfaces[0].update({ disabled: 'no' }),
-            `interface-enable-${name}`,
-            true
-          );
+        conn = await this.connect();
+        const { id } = await this.findItemId(conn, '/interface', 'name', name, `interface-print-${name}`);
+        if (id) {
+          await this.execute(conn, '/interface/set', [`=.id=${id}`, '=disabled=no'], `interface-enable-${name}`, true);
         }
         return { success: true, message: `Interface ${name} enabled` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `enableInterface(${name})`);
   }
 
   async disableInterface(name) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const interfaces = await this.safeMenuOp(
-          () => client.menu('/interface').where('name', name).getAll(),
-          `interface-print-${name}`
-        );
-        if (Array.isArray(interfaces) && interfaces.length > 0) {
-          await this.safeMenuOp(
-            () => interfaces[0].update({ disabled: 'yes' }),
-            `interface-disable-${name}`,
-            true
-          );
+        conn = await this.connect();
+        const { id } = await this.findItemId(conn, '/interface', 'name', name, `interface-print-${name}`);
+        if (id) {
+          await this.execute(conn, '/interface/set', [`=.id=${id}`, '=disabled=yes'], `interface-disable-${name}`, true);
         }
         return { success: true, message: `Interface ${name} disabled` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `disableInterface(${name})`);
   }
@@ -539,41 +481,32 @@ class MikrotikService {
   // ==================== PPP MANAGEMENT ====================
 
   async getPPPSecrets() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ppp/secret').getAll(),
-        'ppp-secrets-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ppp/secret/print', [], 'ppp-secrets-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getActivePPPConnections() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ppp/active').getAll(),
-        'ppp-active-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ppp/active/print', [], 'ppp-active-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getPPPProfiles() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ppp/profile').getAll(),
-        'ppp-profiles-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ppp/profile/print', [], 'ppp-profiles-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
@@ -581,51 +514,35 @@ class MikrotikService {
     if (!name) throw new Error('name is required');
 
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const secretMenu = client.menu('/ppp/secret');
-        const secrets = await this.safeMenuOp(
-          () => secretMenu.where('name', name).getAll(),
-          `secret-print-${name}`
-        );
+        conn = await this.connect();
+        const { id } = await this.findItemId(conn, '/ppp/secret', 'name', name, `secret-print-${name}`);
 
-        if (Array.isArray(secrets) && secrets.length > 0) {
-          await this.safeMenuOp(
-            () => secrets[0].update(updates),
-            `secret-update-${name}`,
-            true
-          );
+        if (id) {
+          const params = [`=.id=${id}`];
+          for (const [key, value] of Object.entries(updates)) {
+            params.push(`=${key}=${value}`);
+          }
+          await this.execute(conn, '/ppp/secret/set', params, `secret-update-${name}`, true);
         }
 
         return { success: true, message: `PPP secret ${name} updated` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `updatePPPSecret(${name})`);
   }
 
   async removeActiveConnection(id) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const activeMenu = client.menu('/ppp/active');
-        const connections = await this.safeMenuOp(
-          () => activeMenu.getAll(),
-          'active-print-all'
-        );
-
-        if (Array.isArray(connections)) {
-          const target = connections.find(c => c['.id'] === id || c.id === id);
-          if (target) {
-            await this.safeMenuOp(() => target.remove(), `active-remove-${id}`, true);
-          }
-        }
-
+        conn = await this.connect();
+        await this.execute(conn, '/ppp/active/remove', [`=.id=${id}`], `active-remove-${id}`, true);
         return { success: true, message: `Active connection ${id} removed` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `removeActiveConnection(${id})`);
   }
@@ -633,226 +550,169 @@ class MikrotikService {
   // ==================== WIRELESS MANAGEMENT ====================
 
   async getWirelessInterfaces() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/interface/wireless').getAll(),
-        'wireless-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/interface/wireless/print', [], 'wireless-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getWirelessSecurityProfiles() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/interface/wireless/security-profiles').getAll(),
-        'wireless-security-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/interface/wireless/security-profiles/print', [], 'wireless-security-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getWirelessRegistrationTable() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/interface/wireless/registration-table').getAll(),
-        'wireless-reg-table'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/interface/wireless/registration-table/print', [], 'wireless-reg-table');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async scanWireless(interfaceName) {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      // scanWireless uses raw write since routeros-client menu doesn't support scan directly
-      return await this.safeMenuOp(
-        () => client.write(['/interface/wireless/scan', `=interface=${interfaceName}`, '=duration=5']),
+      conn = await this.connect();
+      return await this.execute(
+        conn, '/interface/wireless/scan',
+        [`=interface=${interfaceName}`, '=duration=5'],
         `wireless-scan-${interfaceName}`
       );
     } catch (error) {
       logger.warn(`Wireless scan not supported or failed: ${error.message}`);
       return [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   // ==================== IP & NETWORK ====================
 
   async getIPAddresses() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ip/address').getAll(),
-        'ip-address-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ip/address/print', [], 'ip-address-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getRoutes() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ip/route').getAll(),
-        'ip-route-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ip/route/print', [], 'ip-route-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getDNSSettings() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const result = await this.safeMenuOp(
-        () => client.menu('/ip/dns').getOnly(),
-        'dns-print'
-      );
-      return result ? [result] : [];
+      conn = await this.connect();
+      return await this.execute(conn, '/ip/dns/print', [], 'dns-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getDHCPServers() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ip/dhcp-server').getAll(),
-        'dhcp-server-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ip/dhcp-server/print', [], 'dhcp-server-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getFirewallRules() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/ip/firewall/filter').getAll(),
-        'firewall-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/ip/firewall/filter/print', [], 'firewall-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   // ==================== QUEUE MANAGEMENT ====================
 
   async getSimpleQueues() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/queue/simple').getAll(),
-        'queue-simple-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/queue/simple/print', [], 'queue-simple-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getQueueTree() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      return await this.safeMenuOp(
-        () => client.menu('/queue/tree').getAll(),
-        'queue-tree-print'
-      );
+      conn = await this.connect();
+      return await this.execute(conn, '/queue/tree/print', [], 'queue-tree-print');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async createSimpleQueue(queueData) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        await this.safeMenuOp(
-          () => client.menu('/queue/simple').add(queueData),
-          'queue-simple-add',
-          true
-        );
+        conn = await this.connect();
+        const params = [];
+        for (const [key, value] of Object.entries(queueData)) {
+          params.push(`=${key}=${value}`);
+        }
+        await this.execute(conn, '/queue/simple/add', params, 'queue-simple-add', true);
         return { success: true, message: 'Simple queue created successfully' };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, 'createSimpleQueue');
   }
 
   async updateSimpleQueue(id, updates) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const queues = await this.safeMenuOp(
-          () => client.menu('/queue/simple').getAll(),
-          'queue-simple-print'
-        );
-
-        if (Array.isArray(queues)) {
-          const target = queues.find(q => q['.id'] === id || q.id === id);
-          if (target) {
-            await this.safeMenuOp(
-              () => target.update(updates),
-              `queue-simple-update-${id}`,
-              true
-            );
-          }
+        conn = await this.connect();
+        const params = [`=.id=${id}`];
+        for (const [key, value] of Object.entries(updates)) {
+          params.push(`=${key}=${value}`);
         }
-
+        await this.execute(conn, '/queue/simple/set', params, `queue-simple-update-${id}`, true);
         return { success: true, message: `Simple queue ${id} updated` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `updateSimpleQueue(${id})`);
   }
 
   async deleteSimpleQueue(id) {
     return withRetry(async () => {
-      let api, client;
+      let conn;
       try {
-        ({ api, client } = await this.connect());
-        const queues = await this.safeMenuOp(
-          () => client.menu('/queue/simple').getAll(),
-          'queue-simple-print'
-        );
-
-        if (Array.isArray(queues)) {
-          const target = queues.find(q => q['.id'] === id || q.id === id);
-          if (target) {
-            await this.safeMenuOp(
-              () => target.remove(),
-              `queue-simple-delete-${id}`,
-              true
-            );
-          }
-        }
-
+        conn = await this.connect();
+        await this.execute(conn, '/queue/simple/remove', [`=.id=${id}`], `queue-simple-delete-${id}`, true);
         return { success: true, message: `Simple queue ${id} deleted` };
       } finally {
-        this.safeClose(api);
+        this.safeClose(conn);
       }
     }, `deleteSimpleQueue(${id})`);
   }
@@ -860,52 +720,41 @@ class MikrotikService {
   // ==================== MONITORING ====================
 
   async monitorInterfaceTraffic(interfaceName) {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      // monitor-traffic requires raw API write
-      return await this.safeMenuOp(
-        () => client.write(['/interface/monitor-traffic', `=interface=${interfaceName}`, '=duration=1']),
+      conn = await this.connect();
+      return await this.execute(
+        conn, '/interface/monitor-traffic',
+        [`=interface=${interfaceName}`, '=once='],
         `monitor-traffic-${interfaceName}`
       );
     } catch (error) {
       logger.warn(`Monitor traffic failed: ${error.message}`);
       return [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async monitorSystemResource() {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const result = await this.safeMenuOp(
-        () => client.menu('/system/resource').getOnly(),
-        'monitor-resource'
-      );
-      return result ? [result] : [];
+      conn = await this.connect();
+      return await this.execute(conn, '/system/resource/print', [], 'monitor-resource');
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 
   async getSystemLog(topics, limit = 100) {
-    let api, client;
+    let conn;
     try {
-      ({ api, client } = await this.connect());
-      const logMenu = client.menu('/log');
+      conn = await this.connect();
       let result;
       if (topics) {
-        result = await this.safeMenuOp(
-          () => logMenu.where('topics', topics).getAll(),
-          'system-log'
-        );
+        result = await this.execute(conn, '/log/print', [`?topics=${topics}`], 'system-log');
       } else {
-        result = await this.safeMenuOp(
-          () => logMenu.getAll(),
-          'system-log'
-        );
+        result = await this.execute(conn, '/log/print', [], 'system-log');
       }
       // Limit results
       if (Array.isArray(result) && result.length > limit) {
@@ -913,7 +762,7 @@ class MikrotikService {
       }
       return result || [];
     } finally {
-      this.safeClose(api);
+      this.safeClose(conn);
     }
   }
 }
