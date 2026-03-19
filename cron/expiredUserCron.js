@@ -6,25 +6,16 @@ const { DateTime } = require("luxon");
 /**
  * Update MikroTik status
  */
-async function updateUserStatus(username, status) {
+async function updateMikroTikStatus(username, status) {
   try {
-    const res = await conn.write('/ip/hotspot/user/print', [
-      `?name=${username}`
-    ]);
-
-    if (!res || res.length === 0) {
-      console.log(`User ${username} tidak ada di MikroTik`);
-      return;
-    }
-
-    // lanjut update
-  } catch (err) {
-    if (err.message.includes('!empty')) {
-      console.log(`User ${username} tidak ditemukan (!empty)`);
-      return;
-    }
-
-    throw err;
+    logger.info(`Updating MikroTik for user: ${username}`);
+    await mikrotikService.updateUserStatus(username, status);
+    logger.info(`✓ MikroTik updated for ${username}`);
+  } catch (error) {
+    logger.error(`✗ MikroTik update failed for ${username}`, {
+      error: error.message,
+      stack: error.stack,
+    });
   }
 }
 
